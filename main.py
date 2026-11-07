@@ -118,13 +118,13 @@ def get_user(users, chat_id, default_threshold=50000):
             "is_paid": False, 
             "paid_until": None, 
             "username": None,
-            "custom_threshold": default_threshold # ДОБАВИЛИ ПЕРСОНАЛЬНЫЙ ПОРОГ
+            "custom_threshold": default_threshold
         }
     else:
         users[key].setdefault("paid_until", None)
         users[key].setdefault("username", None)
         users[key].setdefault("trial_started_at", None)
-        users[key].setdefault("custom_threshold", default_threshold) # ДОБАВИЛИ ПЕРСОНАЛЬНЫЙ ПОРОГ
+        users[key].setdefault("custom_threshold", default_threshold)
     return users[key]
 
 def trial_remaining(user):
@@ -278,7 +278,6 @@ def format_stats(cfg, stats, uptime_seconds, processed, user):
         if m: return f"{m}м {s}с"
         return f"{s}с"
 
-    # Показываем ИМЕННО ЕГО порог
     user_threshold = user.get("custom_threshold", cfg.get("threshold_usd", 50000))
 
     lines = [
@@ -679,7 +678,6 @@ def main():
             rows = fetch_bets(session)
             new_count = 0
             
-            # Сначала найдем ВСЕ новые ставки и запишем их в seen
             new_bets = []
             for row in rows:
                 bet = row.get("bet") or {}
@@ -708,7 +706,6 @@ def main():
                     "created": bet.get("createdAt")
                 })
 
-            # Теперь рассылаем их по пользователям с учетом их ЛИЧНОГО порога
             if new_bets:
                 for nb in new_bets:
                     record_stat(state["stats"], nb["bet"], nb["usd"], nb["sport_name"], nb["sport_slug"], nb["created"])
@@ -717,7 +714,7 @@ def main():
                     sent_to_any = False
                     
                     for u_id, u_data in users.items():
-                        # Проверяем, активен ли пользователь и ПОДХОДИТ ЛИ ЕМУ СУММА
+                        # Проверяем ЛИЧНЫЙ порог каждого
                         user_thr = float(u_data.get("custom_threshold", global_threshold))
                         if trial_active(u_data) and nb["usd"] >= user_thr:
                             try:
