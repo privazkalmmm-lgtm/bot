@@ -21,7 +21,7 @@ CREATOR_TAG = "@CrazyRup"
 TRIAL_SECONDS = 24 * 3600
 BATCH_SIZE = 10
 
-# Твой токен и ID по умолчанию (если config.json не прочитается)
+# Твой токен и ID по умолчанию
 DEFAULT_TOKEN = "СЮДА_ВСТАВЬ_СВОЙ_ТОКЕН"
 DEFAULT_ADMIN_ID = 8216602920
 
@@ -110,14 +110,21 @@ def save_users(users):
     try: USERS_FILE.write_text(json.dumps(users, indent=2), encoding="utf-8")
     except Exception: pass
 
-def get_user(users, chat_id):
+def get_user(users, chat_id, default_threshold=50000):
     key = str(chat_id)
     if key not in users:
-        users[key] = {"trial_started_at": None, "is_paid": False, "paid_until": None, "username": None}
+        users[key] = {
+            "trial_started_at": None, 
+            "is_paid": False, 
+            "paid_until": None, 
+            "username": None,
+            "custom_threshold": default_threshold # ДОБАВИЛИ ПЕРСОНАЛЬНЫЙ ПОРОГ
+        }
     else:
         users[key].setdefault("paid_until", None)
         users[key].setdefault("username", None)
         users[key].setdefault("trial_started_at", None)
+        users[key].setdefault("custom_threshold", default_threshold) # ДОБАВИЛИ ПЕРСОНАЛЬНЫЙ ПОРОГ
     return users[key]
 
 def trial_remaining(user):
@@ -271,10 +278,13 @@ def format_stats(cfg, stats, uptime_seconds, processed, user):
         if m: return f"{m}м {s}с"
         return f"{s}с"
 
+    # Показываем ИМЕННО ЕГО порог
+    user_threshold = user.get("custom_threshold", cfg.get("threshold_usd", 50000))
+
     lines = [
         "📊 <b>Статистика монитора</b>", "",
         f"🔑 <b>Доступ:</b> {access_label(user)}",
-        f"🎚 <b>Порог:</b> ${float(cfg.get('threshold_usd', 0)):,.0f}",
+        f"🎚 <b>Ваш порог:</b> ${float(user_threshold):,.0f}",
         f"⏱ <b>Интервал:</b> {cfg.get('interval_seconds', '?')} сек",
         f"🕒 <b>Uptime:</b> {fmt_duration(uptime_seconds)}",
         f"🔎 <b>Обработано ставок:</b> {processed}", "",
@@ -382,7 +392,7 @@ def grant_subscription(users, target, days=None):
     key = str(target)
     user = users.get(key)
     if not user:
-        user = {"trial_started_at": time.time(), "is_paid": True, "paid_until": None, "username": None}
+        user = {"trial_started_at": time.time(), "is_paid": True, "paid_until": None, "username": None, "custom_threshold": 50000}
         users[key] = user
     user["is_paid"] = True
     if days is None: user["paid_until"] = None
@@ -401,10 +411,10 @@ def revoke_subscription(users, target):
     return True
 
 HELP_TEXT = (
-    "🤖 <b>Stake Whale Monitor</b>\n\nКнопки внизу:\n"
-    "• 📊 Статистика — сводка и топ ставок\n• 🎚 Порог — текущий порог и как изменить\n"
+    "🤖 <b>ScoreBot</b>\n\nКнопки внизу:\n"
+    "• 📊 Статистика — сводка и топ ставок\n• 🎚 Порог — ваш текущий порог\n"
     "• ⚙️ Настройки — доступ и интервал\n• ℹ️ Помощь — это сообщение\n\n"
-    "Команды:\n/threshold 100000 — установить порог\n/stats — статистика\n/status — состояние\n\n"
+    "Команды:\n/threshold 100000 — установить СВОЙ порог\n/stats — статистика\n/status — состояние\n\n"
     f"Можете отблагодарить создателя — {CREATOR_TAG}"
 )
 
@@ -429,7 +439,8 @@ def handle_text(token, chat_id, text, cfg, users, state):
     global LOGGING_ENABLED
     text = (text or "").strip()
     low = text.lower()
-    user = get_user(users, chat_id)
+    default_thr = float(cfg.get("threshold_usd", 50000))
+    user = get_user(users, chat_id, default_thr)
     admin = is_admin(cfg, chat_id)
     uname = user.get("username")
 
@@ -445,9 +456,9 @@ def handle_text(token, chat_id, text, cfg, users, state):
             return
 
         if cmd == "threshold":
+            current_thr = user.get("custom_threshold", default_thr)
             if len(parts) == 1:
-                cur = float(cfg.get("threshold_usd", 0))
-                send_main_keyboard(token, chat_id, cfg, f"🎚 Текущий порог: <b>${cur:,.0f}</b>\n\nИзменить: <code>/threshold 100000</code>", parse_mode="HTML")
+                send_main_keyboard(token, chat_id, cfg, f"🎚 Ваш персональный порог: <b>${current_thr:,.0f}</b>\n\nИзменить: <code>/threshold 100000</code>", parse_mode="HTML")
                 return
             try:
                 new_threshold = float(parts[1].replace(",", "").replace("_", ""))
@@ -455,9 +466,10 @@ def handle_text(token, chat_id, text, cfg, users, state):
             except ValueError:
                 send_main_keyboard(token, chat_id, cfg, "❌ Нужно положительное число. Пример: <code>/threshold 100000</code>", parse_mode="HTML")
                 return
-            cfg["threshold_usd"] = new_threshold
-            save_config(cfg)
-            send_main_keyboard(token, chat_id, cfg, f"✅ Новый порог: <b>${new_threshold:,.0f}</b>", parse_mode="HTML")
+            
+            user["custom_threshold"] = new_threshold # МЕНЯЕМ ТОЛЬКО ЕГО ПОРОГ
+            save_users(users)
+            send_main_keyboard(token, chat_id, cfg, f"✅ Ваш новый порог: <b>${new_threshold:,.0f}</b>\nТеперь вам будут приходить сигналы только от этой суммы.", parse_mode="HTML")
             return
 
         if cmd == "stats":
@@ -523,11 +535,12 @@ def handle_text(token, chat_id, text, cfg, users, state):
         })
         return
     if "🎚" in text:
-        cur = float(cfg.get("threshold_usd", 0))
-        send_main_keyboard(token, chat_id, cfg, f"🎚 Текущий порог: <b>${cur:,.0f}</b>\n\nИзменить: <code>/threshold 100000</code>", parse_mode="HTML")
+        current_thr = user.get("custom_threshold", default_thr)
+        send_main_keyboard(token, chat_id, cfg, f"🎚 Ваш персональный порог: <b>${current_thr:,.0f}</b>\n\nИзменить: <code>/threshold 100000</code>", parse_mode="HTML")
         return
     if "⚙️" in text:
-        text_out = f"⚙️ <b>Настройки</b>\n\n🔑 <b>Доступ:</b> {access_label(user)}\n🎚 <b>Порог:</b> ${float(cfg.get('threshold_usd', 0)):,.0f}\n⏱ <b>Интервал:</b> {cfg.get('interval_seconds', '?')} сек"
+        current_thr = user.get("custom_threshold", default_thr)
+        text_out = f"⚙️ <b>Настройки</b>\n\n🔑 <b>Доступ:</b> {access_label(user)}\n🎚 <b>Ваш порог:</b> ${float(current_thr):,.0f}\n⏱ <b>Интервал:</b> {cfg.get('interval_seconds', '?')} сек"
         reply_markup = PAY_KEYBOARD if not trial_active(user) else main_keyboard(cfg, chat_id)
         telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": text_out, "parse_mode": "HTML", "reply_markup": reply_markup})
         return
@@ -548,7 +561,8 @@ def handle_callback(token, callback, cfg, users, state):
     msg = callback.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
     admin = is_admin(cfg, chat_id)
-    user = get_user(users, chat_id)
+    default_thr = float(cfg.get("threshold_usd", 50000))
+    user = get_user(users, chat_id, default_thr)
     uname = user.get("username")
 
     if data == "get_access":
@@ -612,6 +626,7 @@ def main():
     cfg = load_config()
     token = cfg.get("telegram_token")
     interval = max(15, int(cfg.get("interval_seconds", 20)))
+    global_threshold = float(cfg.get("threshold_usd", 50000))
 
     session = requests.Session()
     session.headers.update({"user-agent": HEADERS["user-agent"]})
@@ -639,11 +654,10 @@ def main():
     }
     last_offset = offset
 
-    print(f"Мониторинг запущен. Порог ${float(cfg.get('threshold_usd', 50000)):,.0f}; интервал {interval} сек.")
+    print(f"Мониторинг запущен. Порог по умолчанию ${global_threshold:,.0f}; интервал {interval} сек.")
 
     while True:
         try:
-            # 1. Обработка сообщений
             try:
                 updates = telegram_call(token, "getUpdates", {"timeout": 0, "offset": last_offset, "allowed_updates": ["message", "callback_query"]}, timeout=10)
                 for update in updates:
@@ -655,18 +669,18 @@ def main():
                         chat = msg.get("chat") or {}
                         if chat.get("type") == "private":
                             if chat.get("username"):
-                                get_user(users, chat.get("id"))["username"] = chat.get("username")
+                                get_user(users, chat.get("id"), global_threshold)["username"] = chat.get("username")
                             handle_text(token, chat.get("id"), msg.get("text"), cfg, users, state)
                 save_users(users)
             except Exception:
                 pass
 
-            # 2. Парсинг ставок
             prices = get_binance_prices(session)
             rows = fetch_bets(session)
             new_count = 0
-            threshold = float(cfg.get("threshold_usd", 50000))
-
+            
+            # Сначала найдем ВСЕ новые ставки и запишем их в seen
+            new_bets = []
             for row in rows:
                 bet = row.get("bet") or {}
                 bet_id = str(bet.get("id") or row.get("id") or "")
@@ -677,7 +691,7 @@ def main():
                 seen[bet_id] = time.time()
                 state["processed"] += 1
 
-                if usd is None or usd < threshold:
+                if usd is None:
                     continue
 
                 outcomes = bet.get("outcomes") or []
@@ -686,34 +700,44 @@ def main():
                 tour = fixture.get("tournament") or {}
                 cat = tour.get("category") or {}
                 sport = cat.get("sport") or {}
-                record_stat(state["stats"], bet, usd, sport.get("name") or "—", (sport.get("slug") or "").lower(), bet.get("createdAt"))
+                
+                new_bets.append({
+                    "bet": bet, "usd": usd,
+                    "sport_name": sport.get("name") or "—",
+                    "sport_slug": (sport.get("slug") or "").lower(),
+                    "created": bet.get("createdAt")
+                })
 
-                # 3. РАССЫЛКА ВСЕМ АКТИВНЫМ ПОЛЬЗОВАТЕЛЯМ
-                alert_text = format_alert(bet, usd)
-                sent_to_any = False
-                
-                for u_id, u_data in users.items():
-                    if trial_active(u_data):
-                        try:
-                            telegram_call(token, "sendMessage", {
-                                "chat_id": int(u_id),
-                                "text": alert_text,
-                                "parse_mode": "HTML",
-                                "disable_web_page_preview": True,
-                            })
-                            sent_to_any = True
-                        except Exception as e:
-                            print(f"[error] Не смог отправить {u_id}: {e}")
-                            pass
-                
-                if sent_to_any:
-                    new_count += 1
-                    print(f"ALERT ${usd:,.0f} разослан активным пользователям.")
+            # Теперь рассылаем их по пользователям с учетом их ЛИЧНОГО порога
+            if new_bets:
+                for nb in new_bets:
+                    record_stat(state["stats"], nb["bet"], nb["usd"], nb["sport_name"], nb["sport_slug"], nb["created"])
+                    
+                    alert_text = format_alert(nb["bet"], nb["usd"])
+                    sent_to_any = False
+                    
+                    for u_id, u_data in users.items():
+                        # Проверяем, активен ли пользователь и ПОДХОДИТ ЛИ ЕМУ СУММА
+                        user_thr = float(u_data.get("custom_threshold", global_threshold))
+                        if trial_active(u_data) and nb["usd"] >= user_thr:
+                            try:
+                                telegram_call(token, "sendMessage", {
+                                    "chat_id": int(u_id),
+                                    "text": alert_text,
+                                    "parse_mode": "HTML",
+                                    "disable_web_page_preview": True,
+                                })
+                                sent_to_any = True
+                            except Exception as e:
+                                pass
+                    
+                    if sent_to_any:
+                        new_count += 1
 
             save_seen(seen)
             save_stats(state["stats"])
             save_users(users)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Ставок в ленте: {len(rows)}; новых алертов: {new_count}")
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Ставок в ленте: {len(rows)}; новых алертов разослано: {new_count}")
             
             sleep_end = time.time() + interval
             while time.time() < sleep_end:
