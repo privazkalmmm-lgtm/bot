@@ -26,7 +26,7 @@ DEFAULT_ADMIN_ID = 8216602920
 
 ACTIVITY_LOGS = []
 LOGGING_ENABLED = True
-WAITING_FOR_THRESHOLD = set() 
+WAITING_FOR_THRESHOLD = set() # Пользователи, которые сейчас вводят порог
 
 QUERY = """
 query GetHighrollers($limit: Int) {
@@ -443,7 +443,9 @@ def handle_text(token, chat_id, text, cfg, users, state):
     admin = is_admin(cfg, chat_id)
     uname = user.get("username")
 
+    # ПРОВЕРКА: Если пользователь ждет ввода порога
     if chat_id in WAITING_FOR_THRESHOLD:
+        # Если это не команда (не начинается на /)
         if not text.startswith("/"):
             WAITING_FOR_THRESHOLD.remove(chat_id)
             try:
@@ -456,6 +458,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
                 send_main_keyboard(token, chat_id, cfg, "❌ Ошибка. Введите просто число (например, <code>100000</code>) или нажмите кнопку в меню.", parse_mode="HTML")
             return
         else:
+            # Если ввел команду вместо числа, сбрасываем ожидание
             WAITING_FOR_THRESHOLD.remove(chat_id)
 
     if low.startswith("/"):
@@ -542,6 +545,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
         send_main_keyboard(token, chat_id, cfg, "Не знаю такую команду. Жми кнопки внизу.")
         return
 
+    # --- обычные кнопки ---
     if "📊" in text:
         telegram_call(token, "sendMessage", {
             "chat_id": chat_id, "text": format_stats(cfg, state["stats"], time.time() - state["started_at"], state["processed"], user),
@@ -549,7 +553,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
         })
         return
     if "🎚" in text:
-        WAITING_FOR_THRESHOLD.add(chat_id)
+        WAITING_FOR_THRESHOLD.add(chat_id) # ВКЛЮЧАЕМ РЕЖИМ ОЖИДАНИЯ
         send_main_keyboard(token, chat_id, cfg, "✍️ Отправьте желаемую сумму порога в долларах (например: <code>50000</code>):", parse_mode="HTML")
         return
     if "⚙️" in text:
@@ -722,16 +726,13 @@ def main():
                 })
 
             if new_bets:
-                # Читаем юзеров ЗАНОВО перед рассылкой, чтобы уж точно никого не пропустить
-                current_users = load_users()
-                
                 for nb in new_bets:
                     record_stat(state["stats"], nb["bet"], nb["usd"], nb["sport_name"], nb["sport_slug"], nb["created"])
                     
                     alert_text = format_alert(nb["bet"], nb["usd"])
                     sent_to_any = False
                     
-                    for u_id, u_data in current_users.items():
+                    for u_id, u_data in users.items():
                         user_thr = float(u_data.get("custom_threshold", global_threshold))
                         if trial_active(u_data) and nb["usd"] >= user_thr:
                             try:
@@ -743,13 +744,15 @@ def main():
                                 })
                                 sent_to_any = True
                             except Exception as e:
-                                print(f"[send error] Не смог отправить {u_id}: {e}")
+                                pass
                     
                     if sent_to_any:
                         new_count += 1
 
             save_seen(seen)
             save_stats(state["stats"])
+            save_users(users)
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] Ставок в ленте: {len(rows)}; новых алертов разослано: {new_count}")
             
             sleep_end = time.time() + interval
             while time.time() < sleep_end:
