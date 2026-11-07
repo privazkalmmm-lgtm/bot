@@ -449,7 +449,6 @@ BUY_TEXT = (
     "👇 <b>Свяжитесь с создателем для покупки и уточнения цены:</b>"
 )
 
-# ВОССТАНОВЛЕНА ФУНКЦИЯ ПОИСКА ПОЛЬЗОВАТЕЛЯ
 def resolve_target(users, raw):
     raw = (raw or "").strip()
     if not raw: return None
@@ -842,6 +841,13 @@ def main():
                 bet_id = str(bet.get("id") or row.get("id") or "")
                 if not bet_id or bet_id in seen:
                     continue
+                    
+                # --- ПРОВЕРКА НА ЭКСПРЕСС ---
+                outcomes = bet.get("outcomes") or []
+                if len(outcomes) > 1:
+                    seen[bet_id] = time.time() # Запоминаем, чтобы не обрабатывать снова
+                    continue # Пропускаем экспресс
+                # -----------------------------
 
                 usd = to_usd(bet.get("amount"), bet.get("currency"), prices)
                 seen[bet_id] = time.time()
@@ -850,7 +856,6 @@ def main():
                 if usd is None:
                     continue
 
-                outcomes = bet.get("outcomes") or []
                 first = outcomes[0] if outcomes else {}
                 fixture = first.get("fixture") or {}
                 tour = fixture.get("tournament") or {}
