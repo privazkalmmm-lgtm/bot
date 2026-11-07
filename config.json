@@ -2,8 +2,8 @@
   "telegram_token": "9150315602:AAGaMAuAKz2QDvRJUDubDBwsmI0-mx08_sQ",
   "threshold_usd": 50000,
   "interval_seconds": 20,
-  "chat_id": 8216602920,
+  "chat_id": null,
   "admin_ids": [
-    ТУТ_ТВОЙ_ID_ЦИФРАМИ
+    8216602920
   ]
 }
