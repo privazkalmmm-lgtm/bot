@@ -26,6 +26,7 @@ DEFAULT_ADMIN_ID = 8216602920
 ACTIVITY_LOGS = []
 LOGGING_ENABLED = True
 WAITING_FOR_THRESHOLD = set()
+WAITING_FOR_BROADCAST = set() # Новый статус для рассылки
 
 QUERY = """
 query GetHighrollers($limit: Int) {
@@ -354,7 +355,7 @@ def main_keyboard(cfg, chat_id, user):
         
     rows += [
         [{"text": "📊 Статистика"}, {"text": "⚙️ Настройки"}],
-        [{"text": "💎 Купить подписку"}] # Заменили Помощь на Подписку
+        [{"text": "💎 Купить подписку"}]
     ]
     if is_admin(cfg, chat_id): rows.append([{"text": "🛠 Админка"}])
     
@@ -363,7 +364,6 @@ def main_keyboard(cfg, chat_id, user):
 PAY_KEYBOARD = {"inline_keyboard": [[{"text": "💳 Оплатить", "callback_data": "pay"}]]}
 BACK_KEYBOARD = {"inline_keyboard": [[{"text": "🔙 Назад в меню", "callback_data": "back_to_menu"}]]}
 
-# Кнопка для перехода к тебе
 BUY_KEYBOARD = {
     "inline_keyboard": [
         [{"text": "💬 Написать @CrazyRup", "url": f"https://t.me/{CREATOR_TAG.lstrip('@')}"}]
@@ -410,6 +410,7 @@ def get_admin_keyboard():
         "inline_keyboard": [
             [{"text": "👥 Пользователи", "callback_data": "adm_users"}],
             [{"text": "📊 Сводка", "callback_data": "adm_summary"}],
+            [{"text": "📢 Рассылка всем", "callback_data": "adm_broadcast"}], # Новая кнопка
             [{"text": f"🔔 Логи: {status}", "callback_data": "adm_toggle_logs"}, {"text": "📝 Действия", "callback_data": "adm_view_logs"}],
             [{"text": "🎁 Выдать", "callback_data": "adm_grant_hint"}, {"text": "⛔ Забрать", "callback_data": "adm_revoke_hint"}],
             [{"text": "❌ Закрыть", "callback_data": "adm_close"}],
@@ -531,13 +532,37 @@ def resolve_target(users, raw):
     return raw
 
 def handle_text(token, chat_id, text, cfg, users, state):
-    global LOGGING_ENABLED, WAITING_FOR_THRESHOLD
+    global LOGGING_ENABLED, WAITING_FOR_THRESHOLD, WAITING_FOR_BROADCAST
     text = (text or "").strip()
     low = text.lower()
     default_thr = float(cfg.get("threshold_usd", 50000))
     user = get_user(users, chat_id, default_thr)
     admin = is_admin(cfg, chat_id)
     uname = user.get("username")
+
+    # --- РЕЖИМ ОЖИДАНИЯ ТЕКСТА ДЛЯ РАССЫЛКИ ---
+    if chat_id in WAITING_FOR_BROADCAST:
+        WAITING_FOR_BROADCAST.remove(chat_id)
+        if text.startswith("/") or "🔙" in text:
+            send_main_keyboard(token, chat_id, cfg, "Рассылка отменена.", users=users)
+            return
+            
+        # Запускаем рассылку
+        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "⏳ Начинаю рассылку..."})
+        success = 0
+        for u_id in users.keys():
+            try:
+                telegram_call(token, "sendMessage", {
+                    "chat_id": int(u_id),
+                    "text": text,
+                    "parse_mode": "HTML"
+                })
+                success += 1
+                time.sleep(0.05) # Пауза, чтобы Telegram не забанил за спам
+            except Exception:
+                pass
+        send_main_keyboard(token, chat_id, cfg, f"✅ Рассылка завершена. Отправлено: <b>{success}</b> из <b>{len(users)}</b>.", parse_mode="HTML", users=users)
+        return
 
     if chat_id in WAITING_FOR_THRESHOLD:
         if not text.startswith("/") and "🔙" not in text:
@@ -650,6 +675,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
 
     if "🔙" in text:
         WAITING_FOR_THRESHOLD.discard(chat_id)
+        WAITING_FOR_BROADCAST.discard(chat_id)
         send_main_keyboard(token, chat_id, cfg, "Главное меню 👇", users=users)
         return
 
@@ -684,7 +710,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
             "chat_id": chat_id, 
             "text": BUY_TEXT, 
             "parse_mode": "HTML", 
-            "reply_markup": BUY_KEYBOARD # Прикрепляем кнопку-ссылку на тебя
+            "reply_markup": BUY_KEYBOARD
         })
         return
 
@@ -699,7 +725,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
         return
 
 def handle_callback(token, callback, cfg, users, state):
-    global LOGGING_ENABLED, WAITING_FOR_THRESHOLD
+    global LOGGING_ENABLED, WAITING_FOR_THRESHOLD, WAITING_FOR_BROADCAST
     data = callback.get("data") or ""
     cid = callback.get("id")
     msg = callback.get("message") or {}
@@ -711,6 +737,7 @@ def handle_callback(token, callback, cfg, users, state):
 
     if data == "back_to_menu":
         WAITING_FOR_THRESHOLD.discard(chat_id)
+        WAITING_FOR_BROADCAST.discard(chat_id)
         answer_callback(token, cid)
         send_main_keyboard(token, chat_id, cfg, "Главное меню 👇", users=users)
         try: telegram_call(token, "deleteMessage", {"chat_id": chat_id, "message_id": msg.get("message_id")})
@@ -807,6 +834,17 @@ def handle_callback(token, callback, cfg, users, state):
         return
     if not admin:
         answer_callback(token, cid, "Только для админа")
+        return
+
+    # --- ОБРАБОТКА АДМИНСКИХ КНОПОК ---
+    if data == "adm_broadcast":
+        WAITING_FOR_BROADCAST.add(chat_id)
+        answer_callback(token, cid)
+        telegram_call(token, "sendMessage", {
+            "chat_id": chat_id, 
+            "text": "📢 <b>Режим рассылки</b>\n\nОтправь мне текст сообщения, которое нужно разослать всем пользователям. (Поддерживается HTML-форматирование).\n\n<i>Отмена: /start</i>",
+            "parse_mode": "HTML"
+        })
         return
 
     if data == "adm_users":
