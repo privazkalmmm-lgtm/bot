@@ -26,7 +26,7 @@ DEFAULT_ADMIN_ID = 8216602920
 ACTIVITY_LOGS = []
 LOGGING_ENABLED = True
 WAITING_FOR_THRESHOLD = set()
-WAITING_FOR_BROADCAST = set() # Новый статус для рассылки
+WAITING_FOR_BROADCAST = set()
 
 QUERY = """
 query GetHighrollers($limit: Int) {
@@ -348,6 +348,7 @@ def format_stats(cfg, stats, uptime_seconds, processed, user):
             lines.append(f"  {i}. <b>${item['usd']:,.0f}</b> — {item.get('event', '—')}")
     return "\n".join(lines)
 
+# --- КЛАВИАТУРЫ ---
 def main_keyboard(cfg, chat_id, user):
     rows = []
     if not trial_active(user) and not user.get("is_paid"):
@@ -361,48 +362,38 @@ def main_keyboard(cfg, chat_id, user):
     
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
-PAY_KEYBOARD = {"inline_keyboard": [[{"text": "💳 Оплатить", "callback_data": "pay"}]]}
-BACK_KEYBOARD = {"inline_keyboard": [[{"text": "🔙 Назад в меню", "callback_data": "back_to_menu"}]]}
+def settings_keyboard(cfg, chat_id, user):
+    rows = [
+        [{"text": "🎚 Изменить порог"}, {"text": "⚽ Виды спорта"}],
+        [{"text": "🔙 Назад"}]
+    ]
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
+def sports_keyboard():
+    rows = []
+    row = []
+    for slug, name in POPULAR_SPORTS.items():
+        row.append({"text": name})
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row: rows.append(row)
+    rows.append([{"text": "🔙 Назад"}])
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
+
+def stats_keyboard():
+    return {"keyboard": [[{"text": "🔙 Назад"}]], "resize_keyboard": True, "is_persistent": True}
+
+# ДОБАВЛЕНА КЛАВИАТУРА ДЛЯ ПОКУПКИ
+def buy_keyboard():
+    return {"keyboard": [[{"text": "🔙 Назад"}]], "resize_keyboard": True, "is_persistent": True}
+
+PAY_KEYBOARD = {"inline_keyboard": [[{"text": "💳 Оплатить", "callback_data": "pay"}]]}
 BUY_KEYBOARD = {
     "inline_keyboard": [
         [{"text": "💬 Написать @CrazyRup", "url": f"https://t.me/{CREATOR_TAG.lstrip('@')}"}]
     ]
 }
-
-def get_settings_keyboard(user):
-    thr = user.get("custom_threshold", 50000)
-    return {
-        "inline_keyboard": [
-            [{"text": f"🎚 Изменить порог (сейчас ${thr:,.0f})", "callback_data": "set_threshold"}],
-            [{"text": "⚽ Выбрать виды спорта", "callback_data": "choose_sports"}],
-            [{"text": "🔙 Назад в меню", "callback_data": "back_to_menu"}]
-        ]
-    }
-
-def get_sports_keyboard(user):
-    current_filter = user.get("sports_filter", [])
-    all_selected = len(current_filter) == 0
-    
-    rows = []
-    prefix = "✅ " if all_selected else "⬜ "
-    rows.append([{"text": f"{prefix}Все виды спорта", "callback_data": "sport_all"}])
-    
-    row = []
-    for slug, name in POPULAR_SPORTS.items():
-        if all_selected:
-            prefix = "✅ "
-        else:
-            prefix = "✅ " if slug in current_filter else "⬜ "
-            
-        row.append({"text": f"{prefix}{name}", "callback_data": f"sport_{slug}"})
-        if len(row) == 2: 
-            rows.append(row)
-            row = []
-    if row: rows.append(row)
-    
-    rows.append([{"text": "🔙 Назад в настройки", "callback_data": "back_to_settings"}])
-    return {"inline_keyboard": rows}
 
 def get_admin_keyboard():
     status = "ВКЛ" if LOGGING_ENABLED else "ВЫКЛ"
@@ -410,7 +401,7 @@ def get_admin_keyboard():
         "inline_keyboard": [
             [{"text": "👥 Пользователи", "callback_data": "adm_users"}],
             [{"text": "📊 Сводка", "callback_data": "adm_summary"}],
-            [{"text": "📢 Рассылка всем", "callback_data": "adm_broadcast"}], # Новая кнопка
+            [{"text": "📢 Рассылка всем", "callback_data": "adm_broadcast"}],
             [{"text": f"🔔 Логи: {status}", "callback_data": "adm_toggle_logs"}, {"text": "📝 Действия", "callback_data": "adm_view_logs"}],
             [{"text": "🎁 Выдать", "callback_data": "adm_grant_hint"}, {"text": "⛔ Забрать", "callback_data": "adm_revoke_hint"}],
             [{"text": "❌ Закрыть", "callback_data": "adm_close"}],
@@ -431,13 +422,6 @@ WELCOME_TEXT = (
     "👇 <b>Нажми на кнопку «✅ Получить доступ (24ч)» внизу, чтобы активировать триал.</b>"
 )
 
-INFO_TEXT = (
-    "ℹ️ <b>Информация</b>\n\n"
-    "Этот бот отслеживает публичную ленту крупных ставок на Stake и присылает уведомления, "
-    "когда сумма ставки превышает заданный порог.\n\n"
-    "Нажми «✅ Получить доступ (24ч)», чтобы активировать триал."
-)
-
 BUY_TEXT = (
     "💎 <b>Покупка подписки</b>\n\n"
     "Пробный доступ на 24 часа отлично подходит, чтобы оценить работу бота. "
@@ -448,12 +432,6 @@ BUY_TEXT = (
     "• Доступ к пачкам сигналов (для админа)\n\n"
     "👇 <b>Свяжитесь с создателем для покупки и уточнения цены:</b>"
 )
-
-def send_main_keyboard(token, chat_id, cfg, text="Выбери действие 👇", parse_mode=None, users=None):
-    user = get_user(users, chat_id) if users else {}
-    payload = {"chat_id": chat_id, "text": text, "reply_markup": main_keyboard(cfg, chat_id, user)}
-    if parse_mode: payload["parse_mode"] = parse_mode
-    telegram_call(token, "sendMessage", payload)
 
 def format_user_line(key, user):
     uname = user.get("username")
@@ -505,32 +483,6 @@ def revoke_subscription(users, target):
     user["paid_until"] = None
     return True
 
-HELP_TEXT = (
-    "🤖 <b>ScoreBot</b>\n\nКнопки внизу:\n"
-    "• 📊 Статистика — сводка и топ ставок\n• ⚙️ Настройки — порог, фильтры и доступ\n"
-    "• 💎 Купить подписку — связь с создателем\n"
-    "• ℹ️ Помощь — это сообщение\n\n"
-    "Команды:\n/threshold 100000 — установить СВОЙ порог\n/stats — статистика\n/status — состояние\n\n"
-    f"Можете отблагодарить создателя — {CREATOR_TAG}"
-)
-
-ADMIN_HELP = (
-    "🛠 <b>Админ-команды</b>\n\n/grant <code>chat_id</code> — выдать бессрочно\n"
-    "/grant <code>chat_id</code> <code>дней</code> — выдать на N дней\n"
-    "/revoke <code>chat_id</code> — забрать подписку\n/users — список пользователей\n/summary — сводка\n\n"
-    "Пример: <code>/grant 123456789 30</code>"
-)
-
-def resolve_target(users, raw):
-    raw = (raw or "").strip()
-    if not raw: return None
-    if raw.startswith("@") or not raw.isdigit():
-        uname = raw.lstrip("@").lower()
-        for key, user in users.items():
-            if (user.get("username") or "").lower() == uname: return key
-        return None
-    return raw
-
 def handle_text(token, chat_id, text, cfg, users, state):
     global LOGGING_ENABLED, WAITING_FOR_THRESHOLD, WAITING_FOR_BROADCAST
     text = (text or "").strip()
@@ -540,28 +492,21 @@ def handle_text(token, chat_id, text, cfg, users, state):
     admin = is_admin(cfg, chat_id)
     uname = user.get("username")
 
-    # --- РЕЖИМ ОЖИДАНИЯ ТЕКСТА ДЛЯ РАССЫЛКИ ---
     if chat_id in WAITING_FOR_BROADCAST:
         WAITING_FOR_BROADCAST.remove(chat_id)
         if text.startswith("/") or "🔙" in text:
-            send_main_keyboard(token, chat_id, cfg, "Рассылка отменена.", users=users)
+            telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Рассылка отменена.", "reply_markup": main_keyboard(cfg, chat_id, user)})
             return
             
-        # Запускаем рассылку
         telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "⏳ Начинаю рассылку..."})
         success = 0
         for u_id in users.keys():
             try:
-                telegram_call(token, "sendMessage", {
-                    "chat_id": int(u_id),
-                    "text": text,
-                    "parse_mode": "HTML"
-                })
+                telegram_call(token, "sendMessage", {"chat_id": int(u_id), "text": text, "parse_mode": "HTML"})
                 success += 1
-                time.sleep(0.05) # Пауза, чтобы Telegram не забанил за спам
-            except Exception:
-                pass
-        send_main_keyboard(token, chat_id, cfg, f"✅ Рассылка завершена. Отправлено: <b>{success}</b> из <b>{len(users)}</b>.", parse_mode="HTML", users=users)
+                time.sleep(0.05) 
+            except Exception: pass
+        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": f"✅ Рассылка завершена. Отправлено: <b>{success}</b> из <b>{len(users)}</b>.", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
         return
 
     if chat_id in WAITING_FOR_THRESHOLD:
@@ -576,14 +521,14 @@ def handle_text(token, chat_id, text, cfg, users, state):
                     "chat_id": chat_id, 
                     "text": f"✅ Ваш новый порог: <b>${new_threshold:,.0f}</b>", 
                     "parse_mode": "HTML",
-                    "reply_markup": get_settings_keyboard(user)
+                    "reply_markup": settings_keyboard(cfg, chat_id, user)
                 })
             except ValueError:
                 telegram_call(token, "sendMessage", {
                     "chat_id": chat_id, 
                     "text": "❌ Ошибка. Введите просто число (например, <code>100000</code>):", 
                     "parse_mode": "HTML",
-                    "reply_markup": BACK_KEYBOARD
+                    "reply_markup": settings_keyboard(cfg, chat_id, user)
                 })
             return
         elif text.startswith("/") or "🔙" in text:
@@ -600,132 +545,154 @@ def handle_text(token, chat_id, text, cfg, users, state):
             })
             return
 
-        if cmd == "threshold":
-            current_thr = user.get("custom_threshold", default_thr)
-            if len(parts) == 1:
-                send_main_keyboard(token, chat_id, cfg, f"🎚 Ваш порог: <b>${current_thr:,.0f}</b>\n\nЧтобы изменить, отправьте число (например, <code>100000</code>).", parse_mode="HTML", users=users)
-                return
-            try:
-                new_threshold = float(parts[1].replace(",", "").replace("_", ""))
-                if new_threshold <= 0: raise ValueError
-            except ValueError:
-                send_main_keyboard(token, chat_id, cfg, "❌ Нужно положительное число. Пример: <code>/threshold 100000</code>", parse_mode="HTML", users=users)
-                return
-            
-            user["custom_threshold"] = new_threshold
-            save_users(users)
-            send_main_keyboard(token, chat_id, cfg, f"✅ Ваш новый порог: <b>${new_threshold:,.0f}</b>", parse_mode="HTML", users=users)
-            return
-
-        if cmd == "stats":
-            telegram_call(token, "sendMessage", {
-                "chat_id": chat_id, "text": format_stats(cfg, state["stats"], time.time() - state["started_at"], state["processed"], user),
-                "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user), "disable_web_page_preview": True,
-            })
-            return
-
         if cmd in ("grant", "revoke", "users", "summary", "admin"):
             if not admin:
-                send_main_keyboard(token, chat_id, cfg, "⛔ Только для админа.", users=users)
+                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "⛔ Только для админа.", "reply_markup": main_keyboard(cfg, chat_id, user)})
                 return
             if cmd == "admin":
-                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "🛠 <b>Админка</b>\n\n" + ADMIN_HELP, "parse_mode": "HTML", "reply_markup": get_admin_keyboard()})
+                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "🛠 <b>Админка</b>", "parse_mode": "HTML", "reply_markup": get_admin_keyboard()})
                 return
             if cmd == "summary":
-                send_main_keyboard(token, chat_id, cfg, admin_summary(users), parse_mode="HTML", users=users)
+                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": admin_summary(users), "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
                 return
             if cmd == "users":
-                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": admin_users_text(users), "parse_mode": "HTML"})
+                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": admin_users_text(users), "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
                 return
             if cmd == "grant":
                 if len(parts) < 2:
-                    send_main_keyboard(token, chat_id, cfg, "Пример: <code>/grant 123456789 30</code>", parse_mode="HTML", users=users)
+                    telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Пример: <code>/grant 123456789 30</code>", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
                     return
                 target = resolve_target(users, parts[1])
                 if not target:
-                    send_main_keyboard(token, chat_id, cfg, "❌ Пользователь не найден.", users=users)
+                    telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "❌ Пользователь не найден.", "reply_markup": main_keyboard(cfg, chat_id, user)})
                     return
                 days = None
                 if len(parts) >= 3:
                     try: days = int(parts[2])
                     except ValueError:
-                        send_main_keyboard(token, chat_id, cfg, "❌ Дни — число.", users=users)
+                        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "❌ Дни — число.", "reply_markup": main_keyboard(cfg, chat_id, user)})
                         return
                 grant_subscription(users, target, days)
                 save_users(users)
                 label = "бессрочно" if days is None else f"на {days} дн."
-                send_main_keyboard(token, chat_id, cfg, f"✅ Подписка выдана <code>{target}</code> ({label}).", parse_mode="HTML", users=users)
+                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": f"✅ Подписка выдана <code>{target}</code> ({label}).", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
                 try: telegram_call(token, "sendMessage", {"chat_id": int(target), "text": "🎉 <b>Вам активирована подписка!</b>", "parse_mode": "HTML"})
                 except Exception: pass
                 return
             if cmd == "revoke":
                 if len(parts) < 2:
-                    send_main_keyboard(token, chat_id, cfg, "Пример: <code>/revoke 123456789</code>", parse_mode="HTML", users=users)
+                    telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Пример: <code>/revoke 123456789</code>", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
                     return
                 target = resolve_target(users, parts[1])
                 if not target or not revoke_subscription(users, target):
-                    send_main_keyboard(token, chat_id, cfg, "❌ Пользователь не найден.", users=users)
+                    telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "❌ Пользователь не найден.", "reply_markup": main_keyboard(cfg, chat_id, user)})
                     return
                 save_users(users)
-                send_main_keyboard(token, chat_id, cfg, f"⛔ Подписка забрана у <code>{target}</code>.", parse_mode="HTML", users=users)
+                telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": f"⛔ Подписка забрана у <code>{target}</code>.", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
                 return
 
-        send_main_keyboard(token, chat_id, cfg, "Не знаю такую команду. Жми кнопки внизу.", users=users)
+        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Не знаю такую команду. Жми кнопки внизу.", "reply_markup": main_keyboard(cfg, chat_id, user)})
         return
 
-    if "🔙" in text:
+    # --- ОБРАБОТКА КНОПОК НИЖНЕГО МЕНЮ ---
+    
+    if text == "🔙 Назад":
         WAITING_FOR_THRESHOLD.discard(chat_id)
         WAITING_FOR_BROADCAST.discard(chat_id)
-        send_main_keyboard(token, chat_id, cfg, "Главное меню 👇", users=users)
+        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Главное меню 👇", "reply_markup": main_keyboard(cfg, chat_id, user)})
+        return
+        
+    if text == "⚙️ Настройки":
+        text_out = f"⚙️ <b>Настройки</b>\n\n🔑 <b>Доступ:</b> {access_label(user)}"
+        telegram_call(token, "sendMessage", {
+            "chat_id": chat_id, 
+            "text": text_out, 
+            "parse_mode": "HTML", 
+            "reply_markup": settings_keyboard(cfg, chat_id, user)
+        })
+        return
+        
+    if text == "🎚 Изменить порог":
+        WAITING_FOR_THRESHOLD.add(chat_id)
+        telegram_call(token, "sendMessage", {
+            "chat_id": chat_id, 
+            "text": "✍️ Отправьте желаемую сумму порога в долларах (например: <code>50000</code>):", 
+            "parse_mode": "HTML",
+            "reply_markup": settings_keyboard(cfg, chat_id, user)
+        })
+        return
+        
+    if text == "⚽ Виды спорта":
+        text_out = "⚽ <b>Выберите виды спорта:</b>\nНажмите на вид спорта, чтобы включить/выключить его.\n\n<i>Сейчас выбрано: " + (", ".join([POPULAR_SPORTS.get(s, s) for s in user.get("sports_filter", [])]) if user.get("sports_filter") else "Все виды спорта") + "</i>"
+        telegram_call(token, "sendMessage", {
+            "chat_id": chat_id, 
+            "text": text_out, 
+            "parse_mode": "HTML", 
+            "reply_markup": sports_keyboard()
+        })
         return
 
-    if "✅ Получить доступ" in text:
+    # Обработка выбора конкретного спорта
+    for slug, name in POPULAR_SPORTS.items():
+        if text == name:
+            if not user.get("sports_filter"):
+                user["sports_filter"] = list(POPULAR_SPORTS.keys())
+            
+            if slug in user["sports_filter"]:
+                user["sports_filter"].remove(slug)
+            else:
+                user["sports_filter"].append(slug)
+                
+            if len(user["sports_filter"]) == len(POPULAR_SPORTS):
+                user["sports_filter"] = []
+                
+            save_users(users)
+            curr_list = ", ".join([POPULAR_SPORTS.get(s, s) for s in user["sports_filter"]]) if user["sports_filter"] else "Все виды спорта"
+            telegram_call(token, "sendMessage", {
+                "chat_id": chat_id, 
+                "text": f"✅ Настройки обновлены.\nСейчас выбрано: {curr_list}", 
+                "parse_mode": "HTML",
+                "reply_markup": sports_keyboard()
+            })
+            return
+
+    if text == "📊 Статистика":
+        telegram_call(token, "sendMessage", {
+            "chat_id": chat_id, "text": format_stats(cfg, state["stats"], time.time() - state["started_at"], state["processed"], user),
+            "parse_mode": "HTML", "reply_markup": stats_keyboard(), "disable_web_page_preview": True,
+        })
+        return
+
+    if text == "💎 Купить подписку":
+        telegram_call(token, "sendMessage", {
+            "chat_id": chat_id, "text": BUY_TEXT, "parse_mode": "HTML", 
+            "reply_markup": BUY_KEYBOARD
+        })
+        # Отдельным сообщением шлем нижнюю клавиатуру с кнопкой Назад, чтобы не сбить инлайн-кнопку
+        telegram_call(token, "sendMessage", {
+            "chat_id": chat_id, "text": "Используй кнопку ниже, чтобы вернуться 👇", 
+            "reply_markup": buy_keyboard() 
+        })
+        return
+
+    if text == "🛠 Админка":
+        if not admin:
+            telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "⛔ Только для админа.", "reply_markup": main_keyboard(cfg, chat_id, user)})
+            return
+        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "🛠 <b>Админка</b>", "parse_mode": "HTML", "reply_markup": get_admin_keyboard()})
+        return
+        
+    if text == "✅ Получить доступ (24ч)":
         if trial_active(user) or user.get("is_paid"):
-            send_main_keyboard(token, chat_id, cfg, "У вас уже есть доступ!", users=users)
+            telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "У вас уже есть доступ!", "reply_markup": main_keyboard(cfg, chat_id, user)})
             return
         user["trial_started_at"] = time.time()
         save_users(users)
         telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "🎉 <b>Пробный доступ активирован!</b>\n\nВы будете получать уведомления о крупных ставках в течение 24 часов.", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
         return
 
-    if "📊" in text:
-        telegram_call(token, "sendMessage", {
-            "chat_id": chat_id, "text": format_stats(cfg, state["stats"], time.time() - state["started_at"], state["processed"], user),
-            "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user), "disable_web_page_preview": True,
-        })
-        return
-
-    if "⚙️" in text:
-        text_out = f"⚙️ <b>Настройки</b>\n\n🔑 <b>Доступ:</b> {access_label(user)}"
-        telegram_call(token, "sendMessage", {
-            "chat_id": chat_id, 
-            "text": text_out, 
-            "parse_mode": "HTML", 
-            "reply_markup": get_settings_keyboard(user)
-        })
-        return
-
-    if "💎" in text: # Кнопка Купить подписку
-        telegram_call(token, "sendMessage", {
-            "chat_id": chat_id, 
-            "text": BUY_TEXT, 
-            "parse_mode": "HTML", 
-            "reply_markup": BUY_KEYBOARD
-        })
-        return
-
-    if "ℹ️" in text:
-        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": HELP_TEXT + ("\n\n" + ADMIN_HELP if admin else ""), "parse_mode": "HTML", "reply_markup": BACK_KEYBOARD})
-        return
-    if "🛠" in text:
-        if not admin:
-            send_main_keyboard(token, chat_id, cfg, "⛔ Только для админа.", users=users)
-            return
-        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "🛠 <b>Админка</b>\n\n" + ADMIN_HELP, "parse_mode": "HTML", "reply_markup": get_admin_keyboard()})
-        return
-
 def handle_callback(token, callback, cfg, users, state):
-    global LOGGING_ENABLED, WAITING_FOR_THRESHOLD, WAITING_FOR_BROADCAST
+    global LOGGING_ENABLED, WAITING_FOR_BROADCAST
     data = callback.get("data") or ""
     cid = callback.get("id")
     msg = callback.get("message") or {}
@@ -733,116 +700,13 @@ def handle_callback(token, callback, cfg, users, state):
     admin = is_admin(cfg, chat_id)
     default_thr = float(cfg.get("threshold_usd", 50000))
     user = get_user(users, chat_id, default_thr)
-    uname = user.get("username")
 
-    if data == "back_to_menu":
-        WAITING_FOR_THRESHOLD.discard(chat_id)
-        WAITING_FOR_BROADCAST.discard(chat_id)
-        answer_callback(token, cid)
-        send_main_keyboard(token, chat_id, cfg, "Главное меню 👇", users=users)
-        try: telegram_call(token, "deleteMessage", {"chat_id": chat_id, "message_id": msg.get("message_id")})
-        except Exception: pass
-        return
-
-    if data == "back_to_settings":
-        answer_callback(token, cid)
-        text_out = f"⚙️ <b>Настройки</b>\n\n🔑 <b>Доступ:</b> {access_label(user)}"
-        try:
-            telegram_call(token, "editMessageText", {
-                "chat_id": chat_id, "message_id": msg.get("message_id"),
-                "text": text_out, "parse_mode": "HTML", "reply_markup": get_settings_keyboard(user)
-            })
-        except Exception:
-            pass
-        return
-        
-    if data == "set_threshold":
-        WAITING_FOR_THRESHOLD.add(chat_id)
-        answer_callback(token, cid)
-        try:
-            telegram_call(token, "editMessageText", {
-                "chat_id": chat_id, "message_id": msg.get("message_id"),
-                "text": "✍️ Отправьте желаемую сумму порога в долларах (например: <code>50000</code>):", 
-                "parse_mode": "HTML", 
-                "reply_markup": BACK_KEYBOARD
-            })
-        except Exception:
-            pass
-        return
-
-    if data == "choose_sports":
-        answer_callback(token, cid)
-        try:
-            telegram_call(token, "editMessageText", {
-                "chat_id": chat_id, "message_id": msg.get("message_id"),
-                "text": "⚽ <b>Выберите виды спорта:</b>\nНажмите на вид спорта, чтобы включить или выключить его.", 
-                "parse_mode": "HTML", 
-                "reply_markup": get_sports_keyboard(user)
-            })
-        except Exception:
-            pass
-        return
-
-    if data.startswith("sport_"):
-        answer_callback(token, cid)
-        sport_key = data.split("_", 1)[1]
-        
-        if sport_key == "all":
-            user["sports_filter"] = []
-        else:
-            if not user.get("sports_filter"):
-                user["sports_filter"] = list(POPULAR_SPORTS.keys())
-                
-            if sport_key in user["sports_filter"]:
-                user["sports_filter"].remove(sport_key)
-            else:
-                user["sports_filter"].append(sport_key)
-                
-            if len(user["sports_filter"]) == len(POPULAR_SPORTS):
-                user["sports_filter"] = []
-                
-        save_users(users)
-        
-        try:
-            telegram_call(token, "editMessageReplyMarkup", {
-                "chat_id": chat_id, "message_id": msg.get("message_id"),
-                "reply_markup": get_sports_keyboard(user)
-            })
-        except Exception:
-            pass
-        return
-
-    if data == "get_access":
-        if trial_active(user) or user.get("is_paid"):
-            answer_callback(token, cid, "У вас уже есть доступ!")
-            return
-        user["trial_started_at"] = time.time()
-        save_users(users)
-        answer_callback(token, cid, "Доступ на 24 часа активирован! 🎉")
-        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "🎉 <b>Пробный доступ активирован!</b>\n\nВы будете получать уведомления о крупных ставках в течение 24 часов.\nЖми кнопки внизу 👇", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
-        return
-    if data == "info":
-        answer_callback(token, cid)
-        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": INFO_TEXT, "parse_mode": "HTML", "reply_markup": BACK_KEYBOARD})
-        return
-    if data == "pay":
-        answer_callback(token, cid, "Оплата скоро появится 💳")
-        telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "💳 <b>Оплата скоро появится</b>", "parse_mode": "HTML", "reply_markup": main_keyboard(cfg, chat_id, user)})
-        return
-    if not data.startswith("adm_"):
-        answer_callback(token, cid)
-        return
-    if not admin:
-        answer_callback(token, cid, "Только для админа")
-        return
-
-    # --- ОБРАБОТКА АДМИНСКИХ КНОПОК ---
     if data == "adm_broadcast":
         WAITING_FOR_BROADCAST.add(chat_id)
         answer_callback(token, cid)
         telegram_call(token, "sendMessage", {
             "chat_id": chat_id, 
-            "text": "📢 <b>Режим рассылки</b>\n\nОтправь мне текст сообщения, которое нужно разослать всем пользователям. (Поддерживается HTML-форматирование).\n\n<i>Отмена: /start</i>",
+            "text": "📢 <b>Режим рассылки</b>\n\nОтправь мне текст сообщения, которое нужно разослать всем пользователям. (Поддерживается HTML-форматирование).\n\n<i>Отмена: нажми 🔙 Назад</i>",
             "parse_mode": "HTML"
         })
         return
