@@ -21,12 +21,12 @@ CREATOR_TAG = "@CrazyRup"
 TRIAL_SECONDS = 24 * 3600
 BATCH_SIZE = 10
 
-# Твой токен и ID по умолчанию
 DEFAULT_TOKEN = "СЮДА_ВСТАВЬ_СВОЙ_ТОКЕН"
 DEFAULT_ADMIN_ID = 8216602920
 
 ACTIVITY_LOGS = []
 LOGGING_ENABLED = True
+WAITING_FOR_THRESHOLD = set() 
 
 QUERY = """
 query GetHighrollers($limit: Int) {
@@ -435,13 +435,28 @@ def resolve_target(users, raw):
     return raw
 
 def handle_text(token, chat_id, text, cfg, users, state):
-    global LOGGING_ENABLED
+    global LOGGING_ENABLED, WAITING_FOR_THRESHOLD
     text = (text or "").strip()
     low = text.lower()
     default_thr = float(cfg.get("threshold_usd", 50000))
     user = get_user(users, chat_id, default_thr)
     admin = is_admin(cfg, chat_id)
     uname = user.get("username")
+
+    if chat_id in WAITING_FOR_THRESHOLD:
+        if not text.startswith("/"):
+            WAITING_FOR_THRESHOLD.remove(chat_id)
+            try:
+                new_threshold = float(text.replace(",", "").replace("_", "").replace("$", ""))
+                if new_threshold <= 0: raise ValueError
+                user["custom_threshold"] = new_threshold
+                save_users(users)
+                send_main_keyboard(token, chat_id, cfg, f"✅ Ваш новый порог: <b>${new_threshold:,.0f}</b>\nТеперь вам будут приходить сигналы только от этой суммы.", parse_mode="HTML")
+            except ValueError:
+                send_main_keyboard(token, chat_id, cfg, "❌ Ошибка. Введите просто число (например, <code>100000</code>) или нажмите кнопку в меню.", parse_mode="HTML")
+            return
+        else:
+            WAITING_FOR_THRESHOLD.remove(chat_id)
 
     if low.startswith("/"):
         parts = text.split()
@@ -457,7 +472,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
         if cmd == "threshold":
             current_thr = user.get("custom_threshold", default_thr)
             if len(parts) == 1:
-                send_main_keyboard(token, chat_id, cfg, f"🎚 Ваш персональный порог: <b>${current_thr:,.0f}</b>\n\nИзменить: <code>/threshold 100000</code>", parse_mode="HTML")
+                send_main_keyboard(token, chat_id, cfg, f"🎚 Ваш персональный порог: <b>${current_thr:,.0f}</b>\n\nЧтобы изменить, отправьте число (например, <code>100000</code>).", parse_mode="HTML")
                 return
             try:
                 new_threshold = float(parts[1].replace(",", "").replace("_", ""))
@@ -466,7 +481,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
                 send_main_keyboard(token, chat_id, cfg, "❌ Нужно положительное число. Пример: <code>/threshold 100000</code>", parse_mode="HTML")
                 return
             
-            user["custom_threshold"] = new_threshold # МЕНЯЕМ ТОЛЬКО ЕГО ПОРОГ
+            user["custom_threshold"] = new_threshold
             save_users(users)
             send_main_keyboard(token, chat_id, cfg, f"✅ Ваш новый порог: <b>${new_threshold:,.0f}</b>\nТеперь вам будут приходить сигналы только от этой суммы.", parse_mode="HTML")
             return
@@ -534,8 +549,8 @@ def handle_text(token, chat_id, text, cfg, users, state):
         })
         return
     if "🎚" in text:
-        current_thr = user.get("custom_threshold", default_thr)
-        send_main_keyboard(token, chat_id, cfg, f"🎚 Ваш персональный порог: <b>${current_thr:,.0f}</b>\n\nИзменить: <code>/threshold 100000</code>", parse_mode="HTML")
+        WAITING_FOR_THRESHOLD.add(chat_id)
+        send_main_keyboard(token, chat_id, cfg, "✍️ Отправьте желаемую сумму порога в долларах (например: <code>50000</code>):", parse_mode="HTML")
         return
     if "⚙️" in text:
         current_thr = user.get("custom_threshold", default_thr)
@@ -707,14 +722,16 @@ def main():
                 })
 
             if new_bets:
+                # Читаем юзеров ЗАНОВО перед рассылкой, чтобы уж точно никого не пропустить
+                current_users = load_users()
+                
                 for nb in new_bets:
                     record_stat(state["stats"], nb["bet"], nb["usd"], nb["sport_name"], nb["sport_slug"], nb["created"])
                     
                     alert_text = format_alert(nb["bet"], nb["usd"])
                     sent_to_any = False
                     
-                    for u_id, u_data in users.items():
-                        # Проверяем ЛИЧНЫЙ порог каждого
+                    for u_id, u_data in current_users.items():
                         user_thr = float(u_data.get("custom_threshold", global_threshold))
                         if trial_active(u_data) and nb["usd"] >= user_thr:
                             try:
@@ -726,15 +743,13 @@ def main():
                                 })
                                 sent_to_any = True
                             except Exception as e:
-                                pass
+                                print(f"[send error] Не смог отправить {u_id}: {e}")
                     
                     if sent_to_any:
                         new_count += 1
 
             save_seen(seen)
             save_stats(state["stats"])
-            save_users(users)
-            print(f"[{datetime.now().strftime('%H:%M:%S')}] Ставок в ленте: {len(rows)}; новых алертов разослано: {new_count}")
             
             sleep_end = time.time() + interval
             while time.time() < sleep_end:
