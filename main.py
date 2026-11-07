@@ -449,6 +449,17 @@ BUY_TEXT = (
     "👇 <b>Свяжитесь с создателем для покупки и уточнения цены:</b>"
 )
 
+# ВОССТАНОВЛЕНА ФУНКЦИЯ ПОИСКА ПОЛЬЗОВАТЕЛЯ
+def resolve_target(users, raw):
+    raw = (raw or "").strip()
+    if not raw: return None
+    if raw.startswith("@") or not raw.isdigit():
+        uname = raw.lstrip("@").lower()
+        for key, user in users.items():
+            if (user.get("username") or "").lower() == uname: return key
+        return None
+    return raw
+
 def format_user_line(key, user):
     uname = user.get("username")
     name = f"@{uname}" if uname else "—"
