@@ -71,14 +71,14 @@ HEADERS = {
 STABLES = {"USD": 1.0, "USDT": 1.0, "USDC": 1.0, "BUSD": 1.0, "DAI": 1.0}
 
 POPULAR_SPORTS = {
-    "soccer": "⚽ Футбол",
-    "basketball": "🏀 Баскетбол",
-    "tennis": "🎾 Теннис",
-    "ice-hockey": "🏒 Хоккей",
-    "esports": "🎮 Киберспорт",
-    "mma": "🥊 ММА",
-    "volleyball": "🏐 Волейбол",
-    "table-tennis": "🏓 Наст. теннис"
+    "soccer": "Футбол",
+    "basketball": "Баскетбол",
+    "tennis": "Теннис",
+    "ice-hockey": "Хоккей",
+    "esports": "Киберспорт",
+    "mma": "ММА",
+    "volleyball": "Волейбол",
+    "table-tennis": "Наст. теннис"
 }
 
 def log_action(chat_id, username, action):
@@ -369,22 +369,38 @@ def settings_keyboard(cfg, chat_id, user):
     ]
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
-def sports_keyboard():
+def threshold_keyboard():
+    return {
+        "keyboard": [
+            [{"text": "$25,000"}, {"text": "$50,000"}],
+            [{"text": "$100,000"}, {"text": "$200,000"}],
+            [{"text": "🔙 Назад"}]
+        ], 
+        "resize_keyboard": True, 
+        "is_persistent": True
+    }
+
+def sports_keyboard(user):
     rows = []
     row = []
+    sports_filter = user.get("sports_filter", [])
+    
     for slug, name in POPULAR_SPORTS.items():
-        row.append({"text": name})
+        is_selected = (not sports_filter) or (slug in sports_filter)
+        icon = "✅" if is_selected else "❌"
+        
+        row.append({"text": f"{icon} {name}"})
         if len(row) == 2:
             rows.append(row)
             row = []
     if row: rows.append(row)
+    
     rows.append([{"text": "🔙 Назад"}])
     return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
 
 def stats_keyboard():
     return {"keyboard": [[{"text": "🔙 Назад"}]], "resize_keyboard": True, "is_persistent": True}
 
-# ДОБАВЛЕНА КЛАВИАТУРА ДЛЯ ПОКУПКИ
 def buy_keyboard():
     return {"keyboard": [[{"text": "🔙 Назад"}]], "resize_keyboard": True, "is_persistent": True}
 
@@ -510,7 +526,21 @@ def handle_text(token, chat_id, text, cfg, users, state):
         return
 
     if chat_id in WAITING_FOR_THRESHOLD:
-        if not text.startswith("/") and "🔙" not in text:
+        if text in ("🔙 Назад", "⚙️ Настройки", "⚽ Виды спорта", "📊 Статистика", "💎 Купить подписку", "🛠 Админка", "🎚 Изменить порог") or text.startswith("/"):
+            WAITING_FOR_THRESHOLD.remove(chat_id)
+        elif text in ("$25,000", "$50,000", "$100,000", "$200,000"):
+            WAITING_FOR_THRESHOLD.remove(chat_id)
+            new_thr = float(text.replace("$", "").replace(",", ""))
+            user["custom_threshold"] = new_thr
+            save_users(users)
+            telegram_call(token, "sendMessage", {
+                "chat_id": chat_id, 
+                "text": f"✅ Ваш новый порог: <b>${new_thr:,.0f}</b>", 
+                "parse_mode": "HTML",
+                "reply_markup": settings_keyboard(cfg, chat_id, user)
+            })
+            return
+        else:
             WAITING_FOR_THRESHOLD.remove(chat_id)
             try:
                 new_threshold = float(text.replace(",", "").replace("_", "").replace("$", ""))
@@ -531,8 +561,6 @@ def handle_text(token, chat_id, text, cfg, users, state):
                     "reply_markup": settings_keyboard(cfg, chat_id, user)
                 })
             return
-        elif text.startswith("/") or "🔙" in text:
-            WAITING_FOR_THRESHOLD.remove(chat_id)
 
     if low.startswith("/"):
         parts = text.split()
@@ -594,11 +622,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
         telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Не знаю такую команду. Жми кнопки внизу.", "reply_markup": main_keyboard(cfg, chat_id, user)})
         return
 
-    # --- ОБРАБОТКА КНОПОК НИЖНЕГО МЕНЮ ---
-    
     if text == "🔙 Назад":
-        WAITING_FOR_THRESHOLD.discard(chat_id)
-        WAITING_FOR_BROADCAST.discard(chat_id)
         telegram_call(token, "sendMessage", {"chat_id": chat_id, "text": "Главное меню 👇", "reply_markup": main_keyboard(cfg, chat_id, user)})
         return
         
@@ -616,9 +640,9 @@ def handle_text(token, chat_id, text, cfg, users, state):
         WAITING_FOR_THRESHOLD.add(chat_id)
         telegram_call(token, "sendMessage", {
             "chat_id": chat_id, 
-            "text": "✍️ Отправьте желаемую сумму порога в долларах (например: <code>50000</code>):", 
+            "text": "🎚 <b>Выберите порог из списка ниже</b>\nили отправьте желаемую сумму в чат (например: <code>75000</code>):", 
             "parse_mode": "HTML",
-            "reply_markup": settings_keyboard(cfg, chat_id, user)
+            "reply_markup": threshold_keyboard()
         })
         return
         
@@ -628,13 +652,12 @@ def handle_text(token, chat_id, text, cfg, users, state):
             "chat_id": chat_id, 
             "text": text_out, 
             "parse_mode": "HTML", 
-            "reply_markup": sports_keyboard()
+            "reply_markup": sports_keyboard(user)
         })
         return
 
-    # Обработка выбора конкретного спорта
     for slug, name in POPULAR_SPORTS.items():
-        if text == name:
+        if text == f"✅ {name}" or text == f"❌ {name}" or text == name:
             if not user.get("sports_filter"):
                 user["sports_filter"] = list(POPULAR_SPORTS.keys())
             
@@ -648,11 +671,12 @@ def handle_text(token, chat_id, text, cfg, users, state):
                 
             save_users(users)
             curr_list = ", ".join([POPULAR_SPORTS.get(s, s) for s in user["sports_filter"]]) if user["sports_filter"] else "Все виды спорта"
+            
             telegram_call(token, "sendMessage", {
                 "chat_id": chat_id, 
-                "text": f"✅ Настройки обновлены.\nСейчас выбрано: {curr_list}", 
+                "text": f"⚽ <b>Выберите виды спорта:</b>\nНажмите на вид спорта, чтобы включить/выключить его.\n\n<i>Сейчас выбрано: {curr_list}</i>", 
                 "parse_mode": "HTML",
-                "reply_markup": sports_keyboard()
+                "reply_markup": sports_keyboard(user)
             })
             return
 
@@ -668,7 +692,6 @@ def handle_text(token, chat_id, text, cfg, users, state):
             "chat_id": chat_id, "text": BUY_TEXT, "parse_mode": "HTML", 
             "reply_markup": BUY_KEYBOARD
         })
-        # Отдельным сообщением шлем нижнюю клавиатуру с кнопкой Назад, чтобы не сбить инлайн-кнопку
         telegram_call(token, "sendMessage", {
             "chat_id": chat_id, "text": "Используй кнопку ниже, чтобы вернуться 👇", 
             "reply_markup": buy_keyboard() 
