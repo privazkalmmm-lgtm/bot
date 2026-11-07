@@ -11,7 +11,7 @@ CONFIG = BASE / "config.json"
 SEEN_FILE = BASE / "seen_bets.json"
 STATS_FILE = BASE / "stats.json"
 USERS_FILE = BASE / "users.json"
-QUEUE_FILE = BASE / "queue.json"
+ADMIN_QUEUE_FILE = BASE / "admin_queue.json" # Файл для копилки админа
 
 STAKE_URL = "https://stake.com/_api/graphql"
 BINANCE_URL = "https://api.binance.com/api/v3/ticker/price"
@@ -19,14 +19,13 @@ TELEGRAM_API = "https://api.telegram.org"
 
 CREATOR_TAG = "@CrazyRup"
 TRIAL_SECONDS = 24 * 3600
-BATCH_SIZE = 10
 
 DEFAULT_TOKEN = "СЮДА_ВСТАВЬ_СВОЙ_ТОКЕН"
 DEFAULT_ADMIN_ID = 8216602920
 
 ACTIVITY_LOGS = []
 LOGGING_ENABLED = True
-WAITING_FOR_THRESHOLD = set() # Пользователи, которые сейчас вводят порог
+WAITING_FOR_THRESHOLD = set()
 
 QUERY = """
 query GetHighrollers($limit: Int) {
@@ -234,6 +233,29 @@ def record_stat(stats, bet, usd, sport_name, sport_slug, created_iso):
     top.append({"usd": round(usd, 2), "sport": sport_name or "—", "event": (bet.get("outcomes") or [{}])[0].get("fixtureName") or "—", "id": str(bet.get("id") or ""), "at": created_iso or datetime.now(timezone.utc).isoformat(timespec="seconds")})
     top.sort(key=lambda x: x["usd"], reverse=True)
     del top[5:]
+
+def load_admin_queue():
+    if ADMIN_QUEUE_FILE.exists():
+        try: return json.loads(ADMIN_QUEUE_FILE.read_text(encoding="utf-8"))
+        except Exception: pass
+    return []
+
+def save_admin_queue(queue):
+    try: ADMIN_QUEUE_FILE.write_text(json.dumps(queue, indent=2, ensure_ascii=False), encoding="utf-8")
+    except Exception: pass
+
+def format_admin_batch(queue):
+    lines = [
+        "📦 <b>ПАЧКА СИГНАЛОВ (10 шт.)</b>",
+        "Ниже список для проверки результатов нейросетью.\n"
+    ]
+    for i, item in enumerate(queue, 1):
+        lines.append(f"<b>{i}. {item['sport']}</b> | {item['event']}")
+        lines.append(f"   Выбор: {item['selection']} (Кэф: {item['odds']})")
+        lines.append(f"   Сумма: ${item['usd']:,.0f}\n")
+    lines.append("---")
+    lines.append("<i>Скопируй этот текст и отправь нейросети.</i>")
+    return "\n".join(lines)
 
 def format_alert(bet, usd):
     user = bet.get("user") or {}
@@ -443,9 +465,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
     admin = is_admin(cfg, chat_id)
     uname = user.get("username")
 
-    # ПРОВЕРКА: Если пользователь ждет ввода порога
     if chat_id in WAITING_FOR_THRESHOLD:
-        # Если это не команда (не начинается на /)
         if not text.startswith("/"):
             WAITING_FOR_THRESHOLD.remove(chat_id)
             try:
@@ -458,7 +478,6 @@ def handle_text(token, chat_id, text, cfg, users, state):
                 send_main_keyboard(token, chat_id, cfg, "❌ Ошибка. Введите просто число (например, <code>100000</code>) или нажмите кнопку в меню.", parse_mode="HTML")
             return
         else:
-            # Если ввел команду вместо числа, сбрасываем ожидание
             WAITING_FOR_THRESHOLD.remove(chat_id)
 
     if low.startswith("/"):
@@ -467,9 +486,14 @@ def handle_text(token, chat_id, text, cfg, users, state):
 
         if cmd in ("start", "help"):
             log_action(chat_id, uname, f"Команда /{cmd}")
+            
+            # 1. Отправляем приветствие с инлайн-кнопками
             telegram_call(token, "sendMessage", {
                 "chat_id": chat_id, "text": WELCOME_TEXT, "parse_mode": "HTML", "reply_markup": WELCOME_KEYBOARD,
             })
+            
+            # 2. СРАЗУ отправляем нижнее меню с кнопками
+            send_main_keyboard(token, chat_id, cfg, "Используй кнопки внизу для навигации 👇", parse_mode="HTML")
             return
 
         if cmd == "threshold":
@@ -545,7 +569,6 @@ def handle_text(token, chat_id, text, cfg, users, state):
         send_main_keyboard(token, chat_id, cfg, "Не знаю такую команду. Жми кнопки внизу.")
         return
 
-    # --- обычные кнопки ---
     if "📊" in text:
         telegram_call(token, "sendMessage", {
             "chat_id": chat_id, "text": format_stats(cfg, state["stats"], time.time() - state["started_at"], state["processed"], user),
@@ -553,7 +576,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
         })
         return
     if "🎚" in text:
-        WAITING_FOR_THRESHOLD.add(chat_id) # ВКЛЮЧАЕМ РЕЖИМ ОЖИДАНИЯ
+        WAITING_FOR_THRESHOLD.add(chat_id)
         send_main_keyboard(token, chat_id, cfg, "✍️ Отправьте желаемую сумму порога в долларах (например: <code>50000</code>):", parse_mode="HTML")
         return
     if "⚙️" in text:
@@ -665,6 +688,7 @@ def main():
 
     users = load_users()
     seen = load_seen()
+    admin_queue = load_admin_queue()
     state = {
         "started_at": time.time(),
         "processed": 0,
@@ -734,6 +758,7 @@ def main():
                     
                     for u_id, u_data in users.items():
                         user_thr = float(u_data.get("custom_threshold", global_threshold))
+                        
                         if trial_active(u_data) and nb["usd"] >= user_thr:
                             try:
                                 telegram_call(token, "sendMessage", {
@@ -743,6 +768,28 @@ def main():
                                     "disable_web_page_preview": True,
                                 })
                                 sent_to_any = True
+                                
+                                if is_admin(cfg, u_id):
+                                    first_out = (nb["bet"].get("outcomes") or [{}])[0]
+                                    admin_queue.append({
+                                        "sport": nb["sport_name"],
+                                        "event": first_out.get("fixtureName") or "—",
+                                        "selection": (first_out.get("outcome") or {}).get("name") or "—",
+                                        "odds": first_out.get("odds") or "—",
+                                        "usd": nb["usd"]
+                                    })
+                                    save_admin_queue(admin_queue)
+                                    
+                                    if len(admin_queue) >= 10:
+                                        batch_text = format_admin_batch(admin_queue)
+                                        telegram_call(token, "sendMessage", {
+                                            "chat_id": int(u_id),
+                                            "text": batch_text,
+                                            "parse_mode": "HTML",
+                                        })
+                                        admin_queue.clear()
+                                        save_admin_queue(admin_queue)
+
                             except Exception as e:
                                 pass
                     
