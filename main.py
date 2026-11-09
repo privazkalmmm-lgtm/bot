@@ -205,7 +205,8 @@ def to_usd(amount, currency, prices):
     return value * rate
 
 def fetch_bets(session):
-    response = session.post(STAKE_URL, headers=HEADERS, json={"query": QUERY, "variables": {"limit": 25}}, timeout=20)
+    # Лимит 50
+    response = session.post(STAKE_URL, headers=HEADERS, json={"query": QUERY, "variables": {"limit": 50}}, timeout=20)
     response.raise_for_status()
     data = response.json()
     if data.get("errors"): raise RuntimeError(f"Stake error: {data['errors']}")
@@ -244,7 +245,19 @@ def record_stat(stats, bet, usd, sport_name, sport_slug, created_iso):
     key = sport_slug or sport_name or "unknown"
     by_sport[key] = by_sport.get(key, 0) + 1
     top = stats.setdefault("top", [])
-    top.append({"usd": round(usd, 2), "sport": sport_name or "—", "event": (bet.get("outcomes") or [{}])[0].get("fixtureName") or "—", "id": str(bet.get("id") or ""), "at": created_iso or datetime.now(timezone.utc).isoformat(timespec="seconds")})
+    
+    outcomes = bet.get("outcomes") or []
+    first = outcomes[0] if outcomes else {}
+    selection = (first.get("outcome") or {}).get("name") or "—"
+    
+    top.append({
+        "usd": round(usd, 2), 
+        "sport": sport_name or "—", 
+        "event": first.get("fixtureName") or "—",
+        "selection": selection,
+        "id": str(bet.get("id") or ""), 
+        "at": created_iso or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    })
     top.sort(key=lambda x: x["usd"], reverse=True)
     del top[5:]
 
@@ -346,6 +359,7 @@ def format_stats(cfg, stats, uptime_seconds, processed, user):
         lines.append("🐋 <b>Топ-5 ставок за сессию:</b>")
         for i, item in enumerate(top, 1):
             lines.append(f"  {i}. <b>${item['usd']:,.0f}</b> — {item.get('event', '—')}")
+            lines.append(f"     🎯 {item.get('selection', '—')}")
     return "\n".join(lines)
 
 # --- КЛАВИАТУРЫ ---
@@ -373,7 +387,7 @@ def threshold_keyboard():
     return {
         "keyboard": [
             [{"text": "$25,000"}, {"text": "$50,000"}],
-            [{"text": "$100,000"}, {"text": "$200,000"}],
+            [{"text": "$100,000"}, {"text": "$139,000"}],
             [{"text": "🔙 Назад"}]
         ], 
         "resize_keyboard": True, 
@@ -538,7 +552,7 @@ def handle_text(token, chat_id, text, cfg, users, state):
     if chat_id in WAITING_FOR_THRESHOLD:
         if text in ("🔙 Назад", "⚙️ Настройки", "⚽ Виды спорта", "📊 Статистика", "💎 Купить подписку", "🛠 Админка", "🎚 Изменить порог") or text.startswith("/"):
             WAITING_FOR_THRESHOLD.remove(chat_id)
-        elif text in ("$25,000", "$50,000", "$100,000", "$200,000"):
+        elif text in ("$25,000", "$50,000", "$100,000", "$139,000"):
             WAITING_FOR_THRESHOLD.remove(chat_id)
             new_thr = float(text.replace("$", "").replace(",", ""))
             user["custom_threshold"] = new_thr
